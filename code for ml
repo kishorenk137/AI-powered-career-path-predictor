@@ -1,0 +1,434 @@
+
+
+
+
+🖥️ Part 1: Backend Implementation
+1. Recommendation Engine (backend/src/engine/recommendation.js)
+javascript
+import { RECOMMENDATION_WEIGHTS } from '../config/weights.js';
+export function calculateCareerMatch(career, assessment) {
+  if (!assessment) {
+    return {
+      careerId: career.id,
+      title: career.title,
+      category: career.category,
+      matchScore: 0,
+      breakdown: { skills: 0, interests: 0, academic: 0, projects: 0, preferences: 0 }
+    };
+  }
+  const {
+    academicProfile = {},
+    skills = [],
+    interests = [],
+    projectsAndExperience = {},
+    workPreferences = {}
+  } = assessment;
+  // 1. SKILLS MATCH (40% weight)
+  const userSkillMap = new Map();
+  skills.forEach(s => {
+    userSkillMap.set(s.name.toLowerCase().trim(), Number(s.proficiency) || 0);
+  });
+  const careerSkills = career.matchCriteria?.skills || [];
+  let skillScoreSum = 0;
+  let totalSkillWeight = 0;
+  careerSkills.forEach(reqSkill => {
+    const skillName = reqSkill.name.toLowerCase().trim();
+    const userProficiency = userSkillMap.get(skillName) || 0;
+    const requiredLevel = reqSkill.requiredLevel || 70;
+    let weight = 1.0;
+    if (reqSkill.importance === 'critical') weight = 1.5;
+    if (reqSkill.importance === 'nice_to_have') weight = 0.6;
+    const ratio = Math.min(userProficiency / requiredLevel, 1.15);
+    skillScoreSum += (ratio * 100) * weight;
+    totalSkillWeight += weight;
+  });
+  const skillsMatch = totalSkillWeight > 0
+    ? Math.min(100, Math.round(skillScoreSum / totalSkillWeight))
+    : 50;
+  // 2. INTEREST MATCH (25% weight)
+  const careerInterests = (career.matchCriteria?.interests || []).map(i => i.toLowerCase().trim());
+  const userInterests = (interests || []).map(i => i.toLowerCase().trim());
+  let matchedInterests = 0;
+  careerInterests.forEach(ci => {
+    if (userInterests.some(ui => ui.includes(ci) || ci.includes(ui))) {
+      matchedInterests++;
+    }
+  });
+  const interestsMatch = careerInterests.length > 0
+    ? Math.min(100, Math.round((matchedInterests / careerInterests.length) * 100))
+    : 50;
+  // 3. ACADEMIC MATCH (15% weight)
+  let academicScore = 60;
+  const relevantDegrees = (career.matchCriteria?.relevantDegrees || []).map(d => d.toLowerCase());
+  const userDegree = (academicProfile.degree || "").toLowerCase();
+  const userSpec = (academicProfile.specialization || "").toLowerCase();
+  if (relevantDegrees.some(rd => userDegree.includes(rd) || userSpec.includes(rd))) {
+    academicScore += 20;
+  }
+  const cgpa = Number(academicProfile.cgpa) || 7.0;
+  if (cgpa >= 8.5) academicScore += 10;
+  else if (cgpa >= 7.5) academicScore += 5;
+  const relevantSubjects = (career.matchCriteria?.relevantSubjects || []).map(s => s.toLowerCase());
+  const userSubjects = [
+    ...(academicProfile.favoriteSubjects || []),
+    ...(academicProfile.strongSubjects || [])
+  ].map(s => s.toLowerCase());
+  const subjectMatches = relevantSubjects.filter(rs =>
+    userSubjects.some(us => us.includes(rs) || rs.includes(us))
+  ).length;
+  academicScore += Math.min(10, subjectMatches * 3);
+  const academicMatch = Math.min(100, Math.max(30, academicScore));
+  // 4. PROJECT MATCH (10% weight)
+  const userProjects = projectsAndExperience.projects || [];
+  const careerProjectCats = (career.matchCriteria?.projectCategories || []).map(c => c.toLowerCase());
+  let projectScore = 40;
+  if (userProjects.length > 0) {
+    projectScore += Math.min(30, userProjects.length * 10);
+    userProjects.forEach(p => {
+      const cat = (p.category || "").toLowerCase();
+      const techs = (p.technologies || []).map(t => t.toLowerCase());
+      if (careerProjectCats.some(cpc => cat.includes(cpc) || cpc.includes(cat))) {
+        projectScore += 15;
+      }
+      if (careerSkills.some(cs => techs.some(t => t.includes(cs.name.toLowerCase())))) {
+        projectScore += 10;
+      }
+    });
+  }
+  if (projectsAndExperience.internshipExperience) projectScore += 10;
+  if ((projectsAndExperience.certifications || []).length > 0) projectScore += 5;
+  if ((projectsAndExperience.hackathons || 0) > 0) projectScore += 5;
+  const projectMatch = Math.min(100, Math.max(20, projectScore));
+  // 5. WORK PREFERENCE MATCH (10% weight)
+  const careerPrefs = career.matchCriteria?.preferenceAlignment || {
+    peopleVsTech: 50,
+    problemSolving: 75,
+    creativeVsStructured: 50,
+    dataVsBuilding: 50,
+    teamOrientation: 65
+  };
+  const prefKeys = ['peopleVsTech', 'problemSolving', 'creativeVsStructured', 'dataVsBuilding', 'teamOrientation'];
+  let prefDistance = 0;
+  prefKeys.forEach(key => {
+    const userVal = Number(workPreferences[key]) || 50;
+    const careerVal = Number(careerPrefs[key]) || 50;
+    prefDistance += Math.abs(userVal - careerVal);
+  });
+  const avgDiff = prefDistance / prefKeys.length;
+  const workPreferenceMatch = Math.max(35, Math.round(100 - (avgDiff * 0.75)));
+  // FINAL FORMULA
+  const finalScore = Math.round(
+    (skillsMatch * RECOMMENDATION_WEIGHTS.SKILLS) +
+    (interestsMatch * RECOMMENDATION_WEIGHTS.INTERESTS) +
+    (academicMatch * RECOMMENDATION_WEIGHTS.ACADEMIC) +
+    (projectMatch * RECOMMENDATION_WEIGHTS.PROJECTS) +
+    (workPreferenceMatch * RECOMMENDATION_WEIGHTS.WORK_PREFERENCES)
+  );
+  return {
+    careerId: career.id,
+    title: career.title,
+    category: career.category,
+    icon: career.icon,
+    badge: career.badge,
+    description: career.description,
+    avgSalaryRange: career.avgSalaryRange,
+    difficulty: career.difficulty,
+    matchScore: Math.min(99, Math.max(35, finalScore)),
+    breakdown: {
+      skills: skillsMatch,
+      interests: interestsMatch,
+      academic: academicMatch,
+      projects: projectMatch,
+      preferences: workPreferenceMatch
+    },
+    weights: RECOMMENDATION_WEIGHTS
+  };
+}
+export function rankCareers(allCareers, assessment) {
+  const scored = allCareers.map(career => calculateCareerMatch(career, assessment));
+  scored.sort((a, b) => b.matchScore - a.matchScore);
+  return scored;
+}
+2. Explainability Engine (backend/src/engine/explainability.js)
+javascript
+export function generateExplainability(career, assessment, scoreResult) {
+  const { breakdown, matchScore } = scoreResult;
+  const { skills = [], interests = [], projectsAndExperience = {}, academicProfile = {} } = assessment || {};
+  const drivers = [];
+  if (breakdown.skills >= 80) {
+    const strongSkills = skills.filter(s => s.proficiency >= 75).map(s => s.name).slice(0, 3);
+    drivers.push(`High proficiency in key required skills (${strongSkills.join(', ') || 'core domains'})`);
+  }
+  if (breakdown.interests >= 75) {
+    drivers.push(`Strong overlap with your expressed interest in ${interests.slice(0, 2).join(' and ')}`);
+  }
+  if (breakdown.academic >= 80) {
+    drivers.push(`Direct academic coursework alignment in ${academicProfile.degree || 'Computer Science'}`);
+  }
+  if (breakdown.projects >= 75) {
+    const count = (projectsAndExperience.projects || []).length;
+    drivers.push(`Relevant practical experience across ${count} documented projects and internships`);
+  }
+  if (breakdown.preferences >= 80) {
+    drivers.push(`Close harmony with your preferred work style, problem-solving depth, and collaboration tempo`);
+  }
+  let narrative = '';
+  if (matchScore >= 88) {
+    narrative = `Your technical foundation, hands-on project portfolio, and stated interest in ${interests[0] || 'technology'} make ${career.title} an exceptional match for your trajectory. Your highest compatibility indicators are in Skills (${breakdown.skills}%) and Work Preferences (${breakdown.preferences}%).`;
+  } else if (matchScore >= 75) {
+    narrative = `${career.title} aligns well with your academic profile and problem-solving strengths. Bridging a few specialized technical skills will rapidly elevate your job readiness to top-tier status.`;
+  } else {
+    narrative = `${career.title} offers an alternative growth path. While your general analytical skills translate well, focused upskilling across core domain requirements is recommended.`;
+  }
+  const factorAttributions = [
+    { factor: 'Skills Match', weight: '40%', score: breakdown.skills, impact: breakdown.skills >= 80 ? 'High Positive' : 'Growth Area' },
+    { factor: 'Interest Match', weight: '25%', score: breakdown.interests, impact: breakdown.interests >= 75 ? 'High Positive' : 'Moderate' },
+    { factor: 'Academic Match', weight: '15%', score: breakdown.academic, impact: breakdown.academic >= 80 ? 'High Positive' : 'Moderate' },
+    { factor: 'Project Match', weight: '10%', score: breakdown.projects, impact: breakdown.projects >= 70 ? 'High Positive' : 'Moderate' },
+    { factor: 'Work Preferences', weight: '10%', score: breakdown.preferences, impact: breakdown.preferences >= 75 ? 'High Positive' : 'Moderate' }
+  ];
+  return {
+    narrative,
+    primaryDrivers: drivers,
+    factorAttributions,
+    transparencyNote: "Recommendations are computed deterministically through multi-factor weighted matching."
+  };
+}
+3. Server Entry Point (backend/src/server.js)
+javascript
+import express from 'express';
+import cors from 'cors';
+import dotenv from 'dotenv';
+import { initDatabase } from './db/database.js';
+import authRoutes from './routes/auth.routes.js';
+import assessmentRoutes from './routes/assessment.routes.js';
+import careersRoutes from './routes/careers.routes.js';
+import recommendationRoutes from './routes/recommendation.routes.js';
+import assistantRoutes from './routes/assistant.routes.js';
+import adminRoutes from './routes/admin.routes.js';
+dotenv.config();
+const app = express();
+const PORT = process.env.PORT || 5000;
+app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE'], allowedHeaders: ['Content-Type'] }));
+app.use(express.json());
+initDatabase();
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', service: 'CareerAI Backend', timestamp: new Date().toISOString() });
+});
+app.use('/api/auth', authRoutes);
+app.use('/api/assessment', assessmentRoutes);
+app.use('/api/careers', careersRoutes);
+app.use('/api/recommendations', recommendationRoutes);
+app.use('/api/assistant', assistantRoutes);
+app.use('/api/admin', adminRoutes);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`CareerAI Backend Server running on http://0.0.0.0:${PORT}`);
+});
+💻 Part 2: Frontend Implementation
+1. Root Application Router (frontend/src/App.tsx)
+tsx
+import React, { useState } from 'react';
+import { AuthProvider } from './context/AuthContext';
+import { ThemeProvider } from './context/ThemeContext';
+import { Header } from './components/common/Header';
+import { AuthModal } from './components/common/AuthModal';
+import { LandingPage } from './components/landing/LandingPage';
+import { AssessmentWizard } from './components/assessment/AssessmentWizard';
+import { AIProcessingScreen } from './components/assessment/AIProcessingScreen';
+import { Dashboard } from './components/dashboard/Dashboard';
+import { CareerDetail } from './components/career/CareerDetail';
+import { SkillGapView } from './components/skills/SkillGapView';
+import { RoadmapView } from './components/roadmap/RoadmapView';
+import { ProjectRecommendationsView } from './components/projects/ProjectRecommendationsView';
+import { CareerExplorer } from './components/career/CareerExplorer';
+import { CareerComparison } from './components/career/CareerComparison';
+import { AdminDashboard } from './components/admin/AdminDashboard';
+import { AIAssistantDrawer } from './components/assistant/AIAssistantDrawer';
+function MainApp() {
+  const [currentView, setCurrentView] = useState<string>('landing');
+  const [selectedCareerId, setSelectedCareerId] = useState<string>('software-engineer');
+  const [isAuthOpen, setIsAuthOpen] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const navigateTo = (view: string) => {
+    setCurrentView(view);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+  const handleSelectCareer = (careerId: string) => {
+    setSelectedCareerId(careerId);
+    setCurrentView('career-detail');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+  const handleProcessingFinish = () => {
+    setIsProcessing(false);
+    setCurrentView('dashboard');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+  return (
+    <div className="min-h-screen flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 transition-colors duration-300">
+      <Header
+        currentView={currentView}
+        onNavigate={navigateTo}
+        onOpenAuth={() => setIsAuthOpen(true)}
+      />
+      <main className="flex-1">
+        {isProcessing ? (
+          <AIProcessingScreen onFinish={handleProcessingFinish} />
+        ) : (
+          <>
+            {currentView === 'landing' && (
+              <LandingPage
+                onStartAssessment={() => navigateTo('assessment')}
+                onExploreCareers={() => navigateTo('explorer')}
+                onOpenDashboard={() => navigateTo('dashboard')}
+              />
+            )}
+            {currentView === 'assessment' && (
+              <AssessmentWizard
+                onComplete={() => navigateTo('dashboard')}
+                onStartAnalysis={() => setIsProcessing(true)}
+              />
+            )}
+            {currentView === 'dashboard' && (
+              <Dashboard
+                onSelectCareer={handleSelectCareer}
+                onNavigate={navigateTo}
+              />
+            )}
+            {currentView === 'career-detail' && (
+              <CareerDetail
+                careerId={selectedCareerId}
+                onBack={() => navigateTo('dashboard')}
+                onNavigate={navigateTo}
+              />
+            )}
+            {currentView === 'skillgap' && (
+              <SkillGapView
+                onSelectCareer={handleSelectCareer}
+                onNavigate={navigateTo}
+              />
+            )}
+            {currentView === 'roadmap' && (
+              <RoadmapView
+                onSelectCareer={handleSelectCareer}
+                onNavigate={navigateTo}
+              />
+            )}
+            {currentView === 'projects' && (
+              <ProjectRecommendationsView
+                onSelectCareer={handleSelectCareer}
+                onNavigate={navigateTo}
+              />
+            )}
+            {currentView === 'explorer' && (
+              <CareerExplorer onSelectCareer={handleSelectCareer} />
+            )}
+            {currentView === 'compare' && (
+              <CareerComparison onSelectCareer={handleSelectCareer} />
+            )}
+            {currentView === 'admin' && <AdminDashboard />}
+          </>
+        )}
+      </main>
+      <AIAssistantDrawer currentCareerId={selectedCareerId} />
+      <AuthModal isOpen={isAuthOpen} onClose={() => setIsAuthOpen(false)} />
+    </div>
+  );
+}
+export default function App() {
+  return (
+    <ThemeProvider>
+      <AuthProvider>
+        <MainApp />
+      </AuthProvider>
+    </ThemeProvider>
+  );
+}
+2. Frontend API Service Layer (frontend/src/services/api.ts)
+typescript
+import {
+  User,
+  Assessment,
+  Career,
+  CareerMatch,
+  ExplainabilityData,
+  SkillGapData,
+  NextLearningStepsData,
+  RecommendedProject
+} from '../types';
+const BASE_URL = '/api';
+async function request<T>(endpoint: string, options?: RequestInit): Promise<T> {
+  const res = await fetch(`${BASE_URL}${endpoint}`, {
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    ...options
+  });
+  const json = await res.json();
+  if (!res.ok || json.success === false) {
+    throw new Error(json.error || `HTTP error ${res.status}`);
+  }
+  return json.data !== undefined ? json.data : json;
+}
+export const authApi = {
+  getDemoUsers: () => request<User[]>('/auth/demo-users'),
+  switchDemo: (id: string) => request<User>(`/auth/switch-demo/${id}`, { method: 'POST' }),
+  login: (email: string) => request<User>('/auth/login', { method: 'POST', body: JSON.stringify({ email }) }),
+  register: (name: string, email: string, headline?: string) =>
+    request<User>('/auth/register', { method: 'POST', body: JSON.stringify({ name, email, headline }) })
+};
+export const assessmentApi = {
+  getAssessment: (userId: string) => request<Assessment | null>(`/assessment/${userId}`),
+  saveAssessment: (userId: string, data: Assessment) =>
+    request<{ rankedCareers: CareerMatch[]; topCareer: CareerMatch }>(`/assessment/${userId}`, {
+      method: 'POST',
+      body: JSON.stringify(data)
+    })
+};
+export const careersApi = {
+  getCareers: (params?: { category?: string; search?: string; userId?: string }) => {
+    const query = new URLSearchParams();
+    if (params?.category) query.append('category', params.category);
+    if (params?.search) query.append('search', params.search);
+    if (params?.userId) query.append('userId', params.userId);
+    return request<Career[]>(`/careers?${query.toString()}`);
+  },
+  getCareer: (id: string, userId?: string) => {
+    const query = userId ? `?userId=${userId}` : '';
+    return request<Career>(`/careers/${id}${query}`);
+  },
+  compareCareers: (careerIds: string[], userId?: string) =>
+    request<{ careers: any[]; radarMetrics: any[] }>('/careers/compare', {
+      method: 'POST',
+      body: JSON.stringify({ careerIds, userId })
+    })
+};
+export const recommendationsApi = {
+  getRecommendations: (userId: string) =>
+    request<{
+      rankedCareers: CareerMatch[];
+      topCareer: CareerMatch;
+      explainability: ExplainabilityData | null;
+      skillGap: SkillGapData | null;
+      nextSteps: NextLearningStepsData | null;
+    }>(`/recommendations/${userId}`),
+  getDeepDive: (careerId: string, userId: string) =>
+    request<{
+      career: Career;
+      scoreResult: CareerMatch;
+      explainability: ExplainabilityData;
+      skillGap: SkillGapData;
+      nextSteps: NextLearningStepsData;
+      projects: { careerId: string; careerTitle: string; projects: RecommendedProject[] };
+    }>(`/recommendations/career/${careerId}/deepdive/${userId}`)
+};
+export const assistantApi = {
+  sendChat: (message: string, userId: string, careerId?: string) =>
+    request<{ reply: string; targetCareerTitle: string; suggestedPrompts: string[] }>('/assistant/chat', {
+      method: 'POST',
+      body: JSON.stringify({ message, userId, careerId })
+    })
+};
+export const adminApi = {
+  getStats: () => request<any>('/admin/stats'),
+  createCareer: (data: Partial<Career>) => request<Career>('/admin/careers', { method: 'POST', body: JSON.stringify(data) }),
+  updateCareer: (id: string, data: Partial<Career>) => request<Career>(`/admin/careers/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteCareer: (id: string) => request<{ message: string }>(`/admin/careers/${id}`, { method: 'DELETE' })
+};
